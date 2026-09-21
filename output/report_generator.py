@@ -4,10 +4,10 @@ from evaluation.evaluator import summarize_predictions
 
 
 def generate_report(results: list[dict], document_name: str = "the_document") -> None:
-    """Print a simple claim-level and document-level verification report."""
+    """Print a simple claim-level and document-level insurance policy report."""
     summary = summarize_predictions(results)
 
-    print("\nTRUTHLENS VERIFICATION REPORT")
+    print("\nINSURANCE POLICY VERIFICATION REPORT")
     print(f"Document: {document_name}")
     print(f"Claims analyzed: {summary['total']}")
     print(f"Supported: {summary['supported']}")
