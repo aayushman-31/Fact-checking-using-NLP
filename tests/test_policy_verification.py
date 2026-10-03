@@ -1,3 +1,5 @@
+from contextlib import redirect_stdout
+from io import StringIO
 import tempfile
 import unittest
 from pathlib import Path
@@ -171,6 +173,22 @@ class PolicyClaimVerificationTests(unittest.TestCase):
                 ),
                 "This policy covers that.",
             )
+
+    def test_cli_prints_the_policy_sentence_used_as_evidence(self):
+        evidence_sentence = "The policy covers emergency room visits and hospital stays."
+        with tempfile.TemporaryDirectory() as tmpdir:
+            document_path = Path(tmpdir) / "policy.txt"
+            document_path.write_text(evidence_sentence, encoding="utf-8")
+            output = StringIO()
+
+            with redirect_stdout(output):
+                main.main([
+                    "--coverage-need", "emergency room visits",
+                    "--policy-document", str(document_path),
+                ])
+
+        self.assertIn("This document matches your needs", output.getvalue())
+        self.assertIn(evidence_sentence, output.getvalue())
 
 
 if __name__ == "__main__":

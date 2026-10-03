@@ -10,7 +10,7 @@ from preprocessing.sentence_splitter import split_into_sentences
 from claim_detection.claim_detector import identify_claims
 from ner.entity_extractor import extract_entities
 from retrieval.hybrid_retriever import retrieve_evidence
-from verification.verifier import verify_claim
+from verification.verifier import verify_claim, verify_claim_with_evidence
 from output.report_generator import generate_report
 
 
@@ -61,25 +61,15 @@ def _is_negative_coverage_question(request: str) -> bool:
     return any(word in {"not", "no", "never"} for word in words[max(0, action_index - 3):action_index])
 
 
-def _sentence_matches_need(sentence: str, coverage_need: str) -> bool:
-    """Match a sentence to the requested coverage need using phrase and token overlap."""
-    normalized_need = re.sub(r"[^a-z0-9\s]", " ", coverage_need.lower())
-    sentence_lower = sentence.lower()
-
-    if normalized_need in sentence_lower:
-        return True
-
-    need_tokens = set(normalized_need.split())
-    sentence_tokens = set(re.findall(r"[a-z0-9]+", sentence_lower))
-    return bool(need_tokens & sentence_tokens)
-
-
-def evaluate_policy_match(coverage_need: str, policy_document: str | Path) -> str:
-    """Determine whether a policy file matches a requested coverage need."""
+def evaluate_policy_match_with_evidence(
+    coverage_need: str,
+    policy_document: str | Path,
+) -> tuple[str, list[str]]:
+    """Return the policy decision and the document sentences used to reach it."""
     negative_question = _is_negative_coverage_question(coverage_need)
     coverage_need = _extract_coverage_need(coverage_need)
     if not coverage_need:
-        return "This policy does not cover that."
+        return "This policy does not cover that.", []
 
     document_path = Path(policy_document)
     if not document_path.exists():
@@ -96,31 +86,32 @@ def evaluate_policy_match(coverage_need: str, policy_document: str | Path) -> st
         top_k=10,
         document_sentences=sentences,
     )
-    verdict = verify_claim(claim, evidence, entities)
+    verdict, used_evidence = verify_claim_with_evidence(claim, evidence, entities)
 
     if verdict == "SUPPORTED":
         if negative_question:
-            return "This policy covers that."
-        return "This document matches your needs"
+            return "This policy covers that.", used_evidence
+        return "This document matches your needs", used_evidence
 
-    matched_sentences = [
-        sentence for sentence in sentences
-        if _sentence_matches_need(sentence, coverage_need)
-    ]
-    if matched_sentences:
-        sentence_text = " ".join(matched_sentences).lower()
-        exclusion_patterns = [
-            "does not cover",
-            "not covered",
-            "excludes",
-            "excluded",
-            "no coverage for",
-            "not included",
-        ]
-        if any(pattern in sentence_text for pattern in exclusion_patterns):
-            return "This policy does not cover that."
+    return "This policy does not cover that.", used_evidence
 
-    return "This policy does not cover that." if verdict != "SUPPORTED" else "This document matches your needs"
+
+def evaluate_policy_match(coverage_need: str, policy_document: str | Path) -> str:
+    """Determine whether a policy file matches a requested coverage need."""
+    answer, _evidence = evaluate_policy_match_with_evidence(coverage_need, policy_document)
+    return answer
+
+
+def _print_policy_match(coverage_need: str, policy_document: str | Path) -> None:
+    """Print the decision with only the policy passages used to verify it."""
+    answer, evidence = evaluate_policy_match_with_evidence(coverage_need, policy_document)
+    print(answer)
+    print("Evidence from document:")
+    if evidence:
+        for sentence in evidence:
+            print(f"- {sentence}")
+    else:
+        print("- No relevant coverage statement was found.")
 
 
 def run_document_pipeline(document_path: Path) -> None:
@@ -139,10 +130,10 @@ def run_document_pipeline(document_path: Path) -> None:
     for claim in claims:
         entities = extract_entities(claim)
         evidence = retrieve_evidence(claim, entities, document_sentences=sentences)
-        verdict = verify_claim(claim, evidence, entities)
+        verdict, used_evidence = verify_claim_with_evidence(claim, evidence, entities)
         results.append({
             "claim": claim,
-            "evidence": evidence,
+            "evidence": used_evidence,
             "verdict": verdict,
             "entities": entities,
         })
@@ -162,7 +153,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.coverage_need:
-        print(evaluate_policy_match(args.coverage_need, args.policy_document))
+        _print_policy_match(args.coverage_need, args.policy_document)
         return
 
     coverage_need = input("Enter the coverage need: ").strip()
@@ -170,7 +161,7 @@ def main(argv: list[str] | None = None) -> None:
         run_document_pipeline(Path(args.policy_document))
         return
 
-    print(evaluate_policy_match(coverage_need, args.policy_document))
+    _print_policy_match(coverage_need, args.policy_document)
 
 
 if __name__ == "__main__":

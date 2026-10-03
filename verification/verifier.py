@@ -87,10 +87,14 @@ def expand_topic_terms(text: str) -> str:
     return " ".join(keyword for topic in topics for keyword in COVERAGE_TOPICS[topic])
 
 
-def verify_claim(claim: str, evidence: list[str], entities: list[dict] | None = None) -> str:
-    """Use rule-based NLP matching to determine whether policy evidence supports, refutes, or leaves a claim uncertain."""
+def verify_claim_with_evidence(
+    claim: str,
+    evidence: list[str],
+    entities: list[dict] | None = None,
+) -> tuple[str, list[str]]:
+    """Return a verification label and the relevant evidence sentences used."""
     if not evidence:
-        return "NEI"
+        return "NEI", []
 
     normalized_claim = _normalize(claim)
     claim_topics = _extract_topics(claim)
@@ -100,12 +104,12 @@ def verify_claim(claim: str, evidence: list[str], entities: list[dict] | None = 
     ])
 
     if not claim_topics and not claim_has_coverage_intent:
-        return "NEI"
+        return "NEI", []
 
     claim_terms = _subject_terms(claim)
-    saw_support = False
-    saw_refutation = False
-    saw_unknown = False
+    supporting_sentences = []
+    refuting_sentences = []
+    unknown_sentences = []
 
     for sentence in evidence:
         sentence_text = _normalize(sentence)
@@ -118,19 +122,29 @@ def verify_claim(claim: str, evidence: list[str], entities: list[dict] | None = 
             continue
 
         if any(_contains_phrase(sentence_text, pattern) for pattern in NO_MENTION_PATTERNS):
-            saw_unknown = True
+            unknown_sentences.append(sentence)
             continue
 
         if any(_contains_phrase(sentence_text, pattern) for pattern in EXCLUSION_VERBS):
-            saw_refutation = True
+            refuting_sentences.append(sentence)
             continue
 
         if any(_contains_phrase(sentence_text, pattern) for pattern in COVERAGE_VERBS):
-            saw_support = True
+            supporting_sentences.append(sentence)
 
-    if saw_support and not saw_refutation and not saw_unknown:
-        return "SUPPORTED"
-    if saw_refutation and not saw_support and not saw_unknown:
-        return "REFUTED"
+    if supporting_sentences and not refuting_sentences and not unknown_sentences:
+        return "SUPPORTED", supporting_sentences
+    if refuting_sentences and not supporting_sentences and not unknown_sentences:
+        return "REFUTED", refuting_sentences
+    if unknown_sentences:
+        return "NEI", unknown_sentences
+    if supporting_sentences or refuting_sentences:
+        return "NEI", supporting_sentences + refuting_sentences
 
-    return "NEI"
+    return "NEI", []
+
+
+def verify_claim(claim: str, evidence: list[str], entities: list[dict] | None = None) -> str:
+    """Return only the verification label for existing callers."""
+    verdict, _used_evidence = verify_claim_with_evidence(claim, evidence, entities)
+    return verdict
