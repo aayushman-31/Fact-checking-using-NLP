@@ -2,16 +2,48 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import fitz
+
 import main
+from document.document_loader import load_document
 from verification.verifier import verify_claim
+from ner.entity_extractor import _extract_entities_with_rules
 
 
 class PolicyClaimVerificationTests(unittest.TestCase):
+    def test_loads_text_from_pdf_document(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            document_path = Path(tmpdir) / "policy.pdf"
+            pdf = fitz.open()
+            page = pdf.new_page()
+            page.insert_text((72, 72), "The policy covers emergency room visits.")
+            pdf.save(document_path)
+            pdf.close()
+
+            self.assertIn("The policy covers emergency room visits.", load_document(document_path))
+
+    def test_rule_based_entity_fallback_extracts_proper_names(self):
+        entities = _extract_entities_with_rules("John Smith needs coverage in California.")
+        self.assertEqual(
+            entities,
+            [
+                {"text": "John Smith", "label": "PROPER_NOUN"},
+                {"text": "California", "label": "PROPER_NOUN"},
+            ],
+        )
+
     def test_supports_coverage_claim(self):
         evidence = ["The policy covers emergency room visits and hospital stays."]
         self.assertEqual(
             verify_claim("The policy covers emergency room visits.", evidence),
             "SUPPORTED",
+        )
+
+    def test_unrelated_coverage_does_not_support_claim(self):
+        evidence = ["The policy covers emergency room visits and hospital stays."]
+        self.assertEqual(
+            verify_claim("The policy covers dental care.", evidence),
+            "NEI",
         )
 
     def test_refutes_exclusion_claim(self):
@@ -81,6 +113,63 @@ class PolicyClaimVerificationTests(unittest.TestCase):
             self.assertEqual(
                 main.evaluate_policy_match("cosmetic surgery", document_path),
                 "This policy does not cover that.",
+            )
+
+    def test_question_for_unrelated_coverage_does_not_match_generic_policy_text(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            document_path = Path(tmpdir) / "policy.txt"
+            document_path.write_text(
+                "Universal Sompo General Insurance provides coverage for hospitalization.",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                main.evaluate_policy_match(
+                    "does the insurance cover divorce lawyer's fee",
+                    document_path,
+                ),
+                "This policy does not cover that.",
+            )
+
+    def test_question_form_matches_hospitalization_payment_clause(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            document_path = Path(tmpdir) / "policy.txt"
+            document_path.write_text(
+                "We will pay reasonable expenses for emergency hospitalization.",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                main.evaluate_policy_match(
+                    "does the insurance cover emergency hospital visits",
+                    document_path,
+                ),
+                "This document matches your needs",
+            )
+
+    def test_one_shared_generic_word_does_not_match_multiword_need(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            document_path = Path(tmpdir) / "policy.txt"
+            document_path.write_text(
+                "This insurance provides coverage for eligible medical expenses.",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                main.evaluate_policy_match("does it cover marriage expenses", document_path),
+                "This policy does not cover that.",
+            )
+
+    def test_negative_coverage_question_reports_that_policy_covers_need(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            document_path = Path(tmpdir) / "policy.txt"
+            document_path.write_text(
+                "The policy covers emergency room visits.",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                main.evaluate_policy_match(
+                    "does the insurance not cover emergency hospital visits",
+                    document_path,
+                ),
+                "This policy covers that.",
             )
 
 

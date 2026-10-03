@@ -4,7 +4,10 @@ import re
 
 
 COVERAGE_TOPICS = {
-    "emergency": ["emergency", "urgent care", "er", "hospital", "accident"],
+    "emergency": [
+        "emergency", "urgent care", "er", "hospital", "accident", "hospitalization",
+        "hospitalisation", "inpatient", "emergency care", "emergency room",
+    ],
     "dental": ["dental", "teeth", "cleaning", "checkup", "orthodontic"],
     "vision": ["vision", "eye", "glasses", "contact lenses", "optical"],
     "maternity": ["maternity", "newborn", "pregnancy", "delivery"],
@@ -15,17 +18,26 @@ COVERAGE_TOPICS = {
 }
 
 COVERAGE_VERBS = [
-    "cover", "covers", "coverage", "include", "includes", "provided", "provides",
-    "offer", "offers", "benefit", "benefits", "pay for", "pays for"
+    "cover", "covers", "covered", "coverage", "include", "includes", "included",
+    "benefit", "benefits", "pay for", "pays for", "will pay", "shall pay", "payable",
+    "reimburse", "reimburses", "indemnify", "provides coverage", "offers coverage",
 ]
 EXCLUSION_VERBS = [
-    "exclude", "excludes", "excluded", "not covered", "does not cover",
-    "no coverage for", "not included", "not eligible for"
+    "exclude", "excludes", "excluded", "not covered", "does not cover", "does not pay",
+    "will not pay", "shall not pay", "not payable", "no coverage for", "not included",
+    "not eligible for",
 ]
 NO_MENTION_PATTERNS = [
     "does not mention", "not mentioned", "no mention", "not specified",
     "not included in", "not covered in", "not listed"
 ]
+GENERIC_CLAIM_TERMS = {
+    "a", "an", "the", "this", "that", "policy", "plan", "insurance", "insurer",
+    "does", "do", "did", "is", "are", "can", "could", "would", "will", "should",
+    "it", "my", "me", "we", "you", "i", "not", "no", "s", "covers", "cover",
+    "coverage", "included", "includes", "include", "benefit", "benefits",
+    "provides", "provide", "offers", "offer", "for", "with", "to", "of",
+}
 
 
 def _normalize(text: str) -> str:
@@ -38,9 +50,41 @@ def _extract_topics(text: str) -> set[str]:
     normalized = _normalize(text)
     topics = set()
     for topic, keywords in COVERAGE_TOPICS.items():
-        if any(keyword in normalized for keyword in keywords):
+        if any(_contains_phrase(normalized, keyword) for keyword in keywords):
             topics.add(topic)
     return topics
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    """Match a whole phrase so short aliases do not match inside unrelated words."""
+    normalized_phrase = _normalize(phrase).split()
+    if not normalized_phrase:
+        return False
+    pattern = r"\b" + r"\s+".join(re.escape(word) for word in normalized_phrase) + r"\b"
+    return re.search(pattern, text) is not None
+
+
+def _subject_terms(text: str) -> set[str]:
+    """Return meaningful non-topic terms to match coverage needs absent from the topic list."""
+    return {
+        token for token in _normalize(text).split()
+        if token not in GENERIC_CLAIM_TERMS and len(token) > 2
+    }
+
+
+def _has_sufficient_subject_overlap(claim_terms: set[str], evidence_text: str) -> bool:
+    """Require strong token overlap for needs outside the predefined topic vocabulary."""
+    if not claim_terms:
+        return False
+    evidence_terms = _subject_terms(evidence_text)
+    overlap = claim_terms & evidence_terms
+    return len(overlap) / len(claim_terms) >= 0.75
+
+
+def expand_topic_terms(text: str) -> str:
+    """Add topic synonyms to a query so TF-IDF can match policy-specific terminology."""
+    topics = _extract_topics(text)
+    return " ".join(keyword for topic in topics for keyword in COVERAGE_TOPICS[topic])
 
 
 def verify_claim(claim: str, evidence: list[str], entities: list[dict] | None = None) -> str:
@@ -58,24 +102,35 @@ def verify_claim(claim: str, evidence: list[str], entities: list[dict] | None = 
     if not claim_topics and not claim_has_coverage_intent:
         return "NEI"
 
+    claim_terms = _subject_terms(claim)
+    saw_support = False
+    saw_refutation = False
+    saw_unknown = False
+
     for sentence in evidence:
         sentence_text = _normalize(sentence)
         sentence_topics = _extract_topics(sentence_text)
         shared_topics = claim_topics & sentence_topics
 
-        if not shared_topics and not claim_topics:
+        if claim_topics and not shared_topics:
+            continue
+        if not claim_topics and not _has_sufficient_subject_overlap(claim_terms, sentence_text):
             continue
 
-        if any(pattern in sentence_text for pattern in NO_MENTION_PATTERNS):
-            return "NEI"
+        if any(_contains_phrase(sentence_text, pattern) for pattern in NO_MENTION_PATTERNS):
+            saw_unknown = True
+            continue
 
-        if any(pattern in sentence_text for pattern in EXCLUSION_VERBS):
-            return "REFUTED"
+        if any(_contains_phrase(sentence_text, pattern) for pattern in EXCLUSION_VERBS):
+            saw_refutation = True
+            continue
 
-        if any(pattern in sentence_text for pattern in COVERAGE_VERBS):
-            return "SUPPORTED"
+        if any(_contains_phrase(sentence_text, pattern) for pattern in COVERAGE_VERBS):
+            saw_support = True
 
-    if claim_topics and any(_extract_topics(_normalize(sentence)) for sentence in evidence):
+    if saw_support and not saw_refutation and not saw_unknown:
         return "SUPPORTED"
+    if saw_refutation and not saw_support and not saw_unknown:
+        return "REFUTED"
 
     return "NEI"

@@ -1,34 +1,36 @@
 from __future__ import annotations
 
-import os
-
-import spacy
+import re
 
 
 SPACY_MODEL = "en_core_web_sm"
 
+try:
+    import spacy
 
-def _ensure_model() -> None:
-    """Download a spaCy model if it is not already installed."""
-    try:
-        spacy.load(SPACY_MODEL)
-    except OSError:
-        os.system(f"python -m spacy download {SPACY_MODEL}")
-
-
-_ensure_model()
+    nlp = spacy.load(SPACY_MODEL)
+except (ImportError, OSError):
+    nlp = None
 
 
-nlp = spacy.load(SPACY_MODEL)
+def _extract_entities_with_rules(text: str) -> list[dict]:
+    """Extract simple proper-name phrases when spaCy is unavailable."""
+    ignored = {"a", "an", "the", "this", "that", "policy"}
+    matches = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", text)
+    return [
+        {"text": match, "label": "PROPER_NOUN"}
+        for match in dict.fromkeys(matches)
+        if match.lower() not in ignored
+    ]
 
 
 def extract_entities(text: str) -> list[dict]:
-    """Return entities extracted from a claim in a simple dictionary format."""
+    """Return entities using spaCy when available, otherwise use simple NLP rules."""
+    if nlp is None:
+        return _extract_entities_with_rules(text)
+
     doc = nlp(text)
-    entities = []
-    for ent in doc.ents:
-        entities.append({
-            "text": ent.text,
-            "label": ent.label_,
-        })
-    return entities
+    return [
+        {"text": ent.text, "label": ent.label_}
+        for ent in doc.ents
+    ]
